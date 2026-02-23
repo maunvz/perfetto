@@ -103,6 +103,8 @@ class ProtoTraceReader : public ChunkedTraceReader {
                          TraceBlobView interned_data);
   void ParseTraceConfig(ConstBytes);
   void ParseTraceStats(ConstBytes);
+  void OnConcatenatedTraceBoundary();
+  uint32_t ConcatenatedTraceSeqId(uint32_t seq_id) const;
 
   static base::FlatHashMap<int64_t /*Clock Id*/, int64_t /*Offset*/>
   CalculateClockOffsets(std::vector<SyncClockSnapshots>&);
@@ -135,6 +137,13 @@ class ProtoTraceReader : public ChunkedTraceReader {
 
   std::vector<TraceBlobView> eof_deferred_packets_;
   bool received_eof_ = false;
+
+  // Tracks concatenated trace boundaries. When multiple proto traces are
+  // concatenated (cat trace1 trace2 > combined), each trace has its own
+  // TraceConfig packet. We use this to namespace sequence-scoped clock IDs
+  // so they don't collide across traces in the shared ClockTracker.
+  uint32_t trace_config_count_ = 0;
+  uint32_t concatenated_trace_index_ = 0;
 };
 
 }  // namespace trace_processor

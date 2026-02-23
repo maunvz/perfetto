@@ -360,6 +360,11 @@ namespace perfetto::trace_processor::stats {
   F(game_intervention_has_read_errors,    kSingle,  kError,    kTrace,         \
        "The file to be parsed can't be opened. This can happend when "         \
        "the file name is not found or no permission to access the file"),      \
+  F(concatenated_trace_boundaries,        kSingle,  kInfo,     kAnalysis,      \
+      "Number of concatenated trace boundaries detected. When multiple "       \
+      "proto traces are concatenated into a single file, each boundary "       \
+      "causes sequence-scoped clock IDs to be namespaced to avoid "            \
+      "collisions in the shared ClockTracker."),                               \
   F(compact_sched_has_parse_errors,       kSingle,  kError,    kTrace,    ""), \
   F(misplaced_end_event,                  kSingle,  kDataLoss, kAnalysis, ""), \
   F(truncated_sys_write_duration,         kSingle,  kInfo,     kAnalysis,      \

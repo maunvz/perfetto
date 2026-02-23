@@ -325,6 +325,9 @@ base::Status ProtoTraceReader::ParsePacket(TraceBlobView packet) {
   }
 
   if (decoder.has_trace_config()) {
+    if (trace_config_count_++ > 0) {
+      OnConcatenatedTraceBoundary();
+    }
     ParseTraceConfig(decoder.trace_config());
   }
 
@@ -377,8 +380,8 @@ base::Status ProtoTraceReader::TimestampTokenizeAndPushToSorter(
               "probably too old)",
               timestamp_clock_id);
         }
-        converted_clock_id =
-            ClockTracker::SequenceToGlobalClock(seq_id, timestamp_clock_id);
+        converted_clock_id = ClockTracker::SequenceToGlobalClock(
+            ConcatenatedTraceSeqId(seq_id), timestamp_clock_id);
       }
       auto trace_ts = context_->clock_tracker->ToTraceTime(
           converted_clock_id, timestamp, packet.offset());
@@ -440,6 +443,21 @@ void ProtoTraceReader::ParseTraceConfig(protozero::ConstBytes blob) {
       }
     }
   }
+}
+
+void ProtoTraceReader::OnConcatenatedTraceBoundary() {
+  concatenated_trace_index_++;
+  context_->storage->IncrementStats(stats::concatenated_trace_boundaries);
+  // Clear sequence state so the second trace's incremental state starts fresh.
+  // The second trace will re-emit SEQ_INCREMENTAL_STATE_CLEARED packets.
+  sequence_state_.Clear();
+}
+
+uint32_t ProtoTraceReader::ConcatenatedTraceSeqId(uint32_t seq_id) const {
+  if (concatenated_trace_index_ == 0) {
+    return seq_id;
+  }
+  return seq_id | (concatenated_trace_index_ << 24);
 }
 
 void ProtoTraceReader::HandleIncrementalStateCleared(
@@ -547,7 +565,8 @@ base::Status ProtoTraceReader::ParseClockSnapshot(ConstBytes blob,
             "(%" PRId64 ") but the TracePacket sequence_id is zero",
             clock_id);
       }
-      clock_id = ClockTracker::SequenceToGlobalClock(seq_id, clk.clock_id());
+      clock_id = ClockTracker::SequenceToGlobalClock(
+          ConcatenatedTraceSeqId(seq_id), clk.clock_id());
     }
     int64_t unit_multiplier_ns =
         clk.unit_multiplier_ns()
