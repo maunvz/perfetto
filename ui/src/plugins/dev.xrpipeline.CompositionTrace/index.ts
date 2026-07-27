@@ -97,6 +97,19 @@ export default class XrCompositionTracePlugin implements PerfettoPlugin {
     trace.tabs.showTab(pose3dUri);  // add both to the strip...
     trace.tabs.showTab(tabUri);     // ...with XR Pose active
 
+    // Perfetto's tab-add menu doesn't list plugin tabs, so a closed one can't be
+    // reopened from the UI. Register commands ('>' palette) to (re)open them.
+    trace.commands.registerCommand({
+      id: 'dev.xrpipeline.CompositionTrace#openPose',
+      name: 'XR pipeline: open XR Pose tab',
+      callback: () => trace.tabs.showTab(tabUri),
+    });
+    trace.commands.registerCommand({
+      id: 'dev.xrpipeline.CompositionTrace#openPose3D',
+      name: 'XR pipeline: open XR Pose 3D tab',
+      callback: () => trace.tabs.showTab(pose3dUri),
+    });
+
     // Optional: load dump-derived entity metadata (package name + full UUID +
     // token->window) so the XR Pose tab resolves apertureLow beyond the low 64 bits.
     // The dumps aren't in the trace, so the user picks a file; feed it the JSON
