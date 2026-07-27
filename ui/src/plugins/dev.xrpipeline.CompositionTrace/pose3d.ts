@@ -292,6 +292,10 @@ export class Pose3DTab implements Tab {
       else if (sel && sel.kind === 'track_event') selKey = `e:${sel.eventId}`;
       if (selKey && selKey !== this.lastKey) {
         this.lastKey = selKey;
+        // eslint-disable-next-line no-console
+        console.info('[xr-pose3d] selection', selKey, 'ready=', this.ready,
+          'containers=', this.containers.size, 'latched=', this.latched.size,
+          'children=', this.children.size);
         if (sel.kind === 'area') this.rebuild([Number(sel.start), Number(sel.end)], true);
         else if (sel.kind === 'track_event') this.snapshotForEvent(sel.eventId, selKey);
       }

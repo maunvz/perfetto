@@ -49,6 +49,8 @@ export default class XrCompositionTracePlugin implements PerfettoPlugin {
       SELECT COUNT(*) AS cnt FROM slice WHERE name IN ${XR_EVENTS} AND dur = 0
     `);
     if (check.firstRow({cnt: NUM}).cnt === 0) return;
+    // eslint-disable-next-line no-console
+    console.info('[xr-pipeline] plugin active — build 2026-07-27b (XR Pose 3D side panel, selection-driven)');
 
     // Materialize the pipeline slices ONCE. extract_arg() is a per-row args lookup;
     // computing it here (one pass) + indexing by lane turns each lane track into a
