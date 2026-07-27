@@ -85,20 +85,28 @@ export default class XrCompositionTracePlugin implements PerfettoPlugin {
       group.addChildInOrder(new TrackNode({uri, name: lane}));
     }
 
+    // XR Pose (decode) — a per-selection view, so it belongs in the bottom drawer.
     const tabUri = 'dev.xrpipeline.CompositionTrace#Pose';
     poseTab = new XrPoseTab(trace);
     trace.tabs.registerTab({uri: tabUri, content: poseTab});
+    trace.tabs.showTab(tabUri);
 
-    // 3D pose viewer: hover the timeline; see the last container / aetherChild /
-    // latched pose per aperture in RAW space. Its WebGL/RAF loop only spins up when
-    // the tab is the active one, so showing it in the strip by default is cheap.
+    // XR Pose 3D — a persistent spatial view. It lives in the RIGHT SIDE PANEL, not
+    // the bottom drawer: the drawer is stolen by 'Current Selection' on every click,
+    // whereas the side panel stays open. Hover the timeline for a snapshot;
+    // area-select a range for a trail over time.
     const pose3dUri = 'dev.xrpipeline.CompositionTrace#Pose3D';
-    trace.tabs.registerTab({uri: pose3dUri, content: new Pose3DTab(trace)});
-    trace.tabs.showTab(pose3dUri);  // add both to the strip...
-    trace.tabs.showTab(tabUri);     // ...with XR Pose active
+    const pose3d = new Pose3DTab(trace);
+    trace.sidePanel.registerTab({
+      uri: pose3dUri,
+      title: 'XR Pose 3D',
+      icon: 'view_in_ar',
+      render: () => pose3d.render(),
+    });
+    trace.sidePanel.showTab(pose3dUri);
 
-    // Perfetto's tab-add menu doesn't list plugin tabs, so a closed one can't be
-    // reopened from the UI. Register commands ('>' palette) to (re)open them.
+    // Plugin tabs/panels aren't in Perfetto's add-tab menu, so register '>' palette
+    // commands to (re)open them if closed.
     trace.commands.registerCommand({
       id: 'dev.xrpipeline.CompositionTrace#openPose',
       name: 'XR pipeline: open XR Pose tab',
@@ -106,8 +114,8 @@ export default class XrCompositionTracePlugin implements PerfettoPlugin {
     });
     trace.commands.registerCommand({
       id: 'dev.xrpipeline.CompositionTrace#openPose3D',
-      name: 'XR pipeline: open XR Pose 3D tab',
-      callback: () => trace.tabs.showTab(pose3dUri),
+      name: 'XR pipeline: open XR Pose 3D panel',
+      callback: () => trace.sidePanel.showTab(pose3dUri),
     });
 
     // Optional: load dump-derived entity metadata (package name + full UUID +

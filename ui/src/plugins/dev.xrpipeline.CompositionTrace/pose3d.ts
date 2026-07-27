@@ -56,6 +56,19 @@ function lastLE(samples: Sample[], ts: number): Sample | undefined {
   return res;
 }
 
+// Samples with s <= ts <= e, strided down to at most `cap` (keeps the last).
+function samplesInRange(arr: Sample[], s: number, e: number, cap = 400): Sample[] {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mmid = (lo + hi) >> 1; if (arr[mmid].ts < s) lo = mmid + 1; else hi = mmid; }
+  const out: Sample[] = [];
+  for (let i = lo; i < arr.length && arr[i].ts <= e; i++) out.push(arr[i]);
+  if (out.length <= cap) return out;
+  const stride = Math.ceil(out.length / cap);
+  const strided = out.filter((_, i) => i % stride === 0);
+  if (strided[strided.length - 1] !== out[out.length - 1]) strided.push(out[out.length - 1]);
+  return strided;
+}
+
 async function loadStream(trace: Trace, name: string, sub: string,
                           posPfx: string, quatPfx: string): Promise<ByEntity> {
   // SpaceManagerWrite args: posX/Y/Z + quatX/Y/Z/W. AperturePose: apPosX.. + apQuatX..
@@ -107,6 +120,7 @@ export class Pose3DTab implements Tab {
   private legend?: HTMLDivElement;
   private raf = 0;
   private lastMarker = NaN;
+  private lastKey = '';
   // orbit
   private theta = 0.7;
   private phi = 1.2;
@@ -215,8 +229,20 @@ export class Pose3DTab implements Tab {
         this.renderer!.setSize(cw, ch, false);
         this.camera!.aspect = cw / ch; this.camera!.updateProjectionMatrix();
       }
-      const mk = this.marker();
-      if (mk !== undefined && mk !== this.lastMarker) { this.lastMarker = mk; this.rebuild(mk); }
+      // Drive from an area selection (trail over the range) if present, else the
+      // hover marker (snapshot).
+      const sel = this.trace.selection.selection;
+      let range: [number, number] | undefined;
+      let trail = false;
+      if (sel && sel.kind === 'area') {
+        range = [Number(sel.start), Number(sel.end)];
+        trail = true;
+      } else {
+        const mk = this.marker();
+        if (mk !== undefined) { this.lastMarker = mk; range = [mk, mk]; }
+      }
+      const key = range ? `${trail ? 'a' : 'p'}:${range[0]}-${range[1]}` : '';
+      if (range && key !== this.lastKey) { this.lastKey = key; this.rebuild(range, trail); }
       this.camera!.position.set(
         this.target.x + this.radius * Math.sin(this.phi) * Math.sin(this.theta),
         this.target.y + this.radius * Math.cos(this.phi),
@@ -254,59 +280,102 @@ export class Pose3DTab implements Tab {
     this.gizmos!.add(dot);
   }
 
-  private rebuild(marker: number): void {
+  private addTrail(points: any[], color: number): void {
+    if (points.length < 2) return;
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const line = new THREE.Line(
+      geo, new THREE.LineBasicMaterial({color, transparent: true, opacity: 0.85}));
+    this.gizmos!.add(line);
+  }
+
+  // range=[s,e]; trail=true renders every sample in [s,e] as a path, else a single
+  // snapshot at e. Children are composed with the container pose at each sample's time.
+  private rebuild(range: [number, number], trail: boolean): void {
     if (!this.gizmos) return;
     this.gizmos.clear();
+    const [s, e] = range;
     const rows: string[] = [];
     const swatch = (c: number) =>
       `<span style="display:inline-block;width:9px;height:9px;background:#${c.toString(16).padStart(6, '0')};margin-right:5px"></span>`;
-    const fmt = (s: Sample) =>
-      `(${s.p.map((x) => x.toFixed(2)).join(', ')})`;
-    const label = (e: string) => {
-      const md = this.meta.get(e);
+    const pos = (x: Sample) => `(${x.p.map((v) => v.toFixed(2)).join(', ')})`;
+    const vec = (x: Sample) => new THREE.Vector3(x.p[0], x.p[1], x.p[2]);
+    const label = (e2: string) => {
+      const md = this.meta.get(e2);
       return md && (md.pkg || md.role)
-        ? `${e} ${md.role}${md.pkg ? ' ' + md.pkg.split('/').pop() : ''}` : e;
+        ? `${e2} ${md.role}${md.pkg ? ' ' + md.pkg.split('/').pop() : ''}` : e2;
     };
 
-    // Active container (RAW): the one with a sample at the marker; prefer most writes.
-    let containerMat: any | undefined;
-    let containerName = '';
+    // Active container (largest with a sample <= e), for composing children.
+    let containerArr: Sample[] | undefined;
     let best = -1;
-    for (const [e, arr] of this.containers) {
-      const s = lastLE(arr, marker);
-      if (!s) continue;
-      if (arr.length > best) { best = arr.length; containerMat = this.matrix(s); containerName = e; }
+    for (const [, arr] of this.containers) {
+      if (lastLE(arr, e) && arr.length > best) { best = arr.length; containerArr = arr; }
+    }
+    const containerAt = (t: number) => {
+      const cs = containerArr ? lastLE(containerArr, t) : undefined;
+      return cs ? this.matrix(cs) : undefined;
+    };
+
+    for (const [ce, arr] of this.containers) {
       const c = 0xdddddd;
-      this.addGizmo(this.matrix(s), 0.4, c);
-      rows.push(`${swatch(c)}container ${label(e)} ${fmt(s)}`);
+      if (trail) {
+        const ss = samplesInRange(arr, s, e);
+        if (!ss.length) continue;
+        this.addTrail(ss.map(vec), c);
+        this.addGizmo(this.matrix(ss[ss.length - 1]), 0.4, c);
+        rows.push(`${swatch(c)}container ${label(ce)} ×${ss.length}`);
+      } else {
+        const last = lastLE(arr, e); if (!last) continue;
+        this.addGizmo(this.matrix(last), 0.4, c);
+        rows.push(`${swatch(c)}container ${label(ce)} ${pos(last)}`);
+      }
     }
 
-    // Latched aperture poses (RAW).
-    for (const [e, arr] of this.latched) {
-      const s = lastLE(arr, marker);
-      if (!s) continue;
-      const c = new THREE.Color().setHSL(hue(e), 0.7, 0.55).getHex();
-      this.addGizmo(this.matrix(s), 0.28, c);
-      rows.push(`${swatch(c)}latched ${label(e)} src=${s.src ?? '?'} ${fmt(s)}`);
+    for (const [le, arr] of this.latched) {
+      const c = new THREE.Color().setHSL(hue(le), 0.7, 0.55).getHex();
+      if (trail) {
+        const ss = samplesInRange(arr, s, e); if (!ss.length) continue;
+        this.addTrail(ss.map(vec), c);
+        this.addGizmo(this.matrix(ss[ss.length - 1]), 0.28, c);
+        rows.push(`${swatch(c)}latched ${label(le)} ×${ss.length}`);
+      } else {
+        const last = lastLE(arr, e); if (!last) continue;
+        this.addGizmo(this.matrix(last), 0.28, c);
+        rows.push(`${swatch(c)}latched ${label(le)} src=${last.src ?? '?'} ${pos(last)}`);
+      }
     }
 
-    // aetherChild (container frame) composed with the active container -> RAW.
     for (const [tok, arr] of this.children) {
-      const s = lastLE(arr, marker);
-      if (!s || !containerMat) continue;
-      const world = new THREE.Matrix4().multiplyMatrices(containerMat, this.matrix(s));
       const win = this.tokenToWindow.get(tok);
       const c = win ? new THREE.Color().setHSL(hue(win), 0.9, 0.6).getHex() : 0xff33ff;
-      this.addGizmo(world, 0.34, c);
-      rows.push(`${swatch(c)}child ${label(tok)} ∘ ${containerName.slice(0, 8)}` +
-        `${win ? ' → win ' + win : ''} ${fmt(s)}`);
+      if (trail) {
+        const ss = samplesInRange(arr, s, e); if (!ss.length) continue;
+        const pts: any[] = [];
+        for (const x of ss) {
+          const cm = containerAt(x.ts); if (!cm) continue;
+          const w = new THREE.Matrix4().multiplyMatrices(cm, this.matrix(x));
+          pts.push(new THREE.Vector3().setFromMatrixPosition(w));
+        }
+        if (!pts.length) continue;
+        this.addTrail(pts, c);
+        const lastCm = containerAt(ss[ss.length - 1].ts);
+        if (lastCm) {
+          this.addGizmo(new THREE.Matrix4().multiplyMatrices(lastCm, this.matrix(ss[ss.length - 1])), 0.34, c);
+        }
+        rows.push(`${swatch(c)}child ${label(tok)}${win ? ' → ' + win : ''} ×${ss.length}`);
+      } else {
+        const last = lastLE(arr, e); const cm = containerAt(e);
+        if (!last || !cm) continue;
+        this.addGizmo(new THREE.Matrix4().multiplyMatrices(cm, this.matrix(last)), 0.34, c);
+        rows.push(`${swatch(c)}child ${label(tok)}${win ? ' → win ' + win : ''} ${pos(last)}`);
+      }
     }
 
     if (this.legend) {
-      const ms = (marker / 1e9).toFixed(3);
-      this.legend.innerHTML =
-        `<b>marker t=${ms}s</b>  (hover the timeline)<br>` +
-        (rows.length ? rows.join('<br>') : '(no poses at/before marker)');
+      const hdr = trail
+        ? `<b>trail ${(s / 1e9).toFixed(3)}–${(e / 1e9).toFixed(3)} s</b> (area-select a range; hover for a snapshot)`
+        : `<b>marker t=${(e / 1e9).toFixed(3)} s</b> (hover the timeline; area-select for a trail)`;
+      this.legend.innerHTML = hdr + '<br>' + (rows.length ? rows.join('<br>') : '(no poses in range)');
     }
   }
 }
