@@ -20,7 +20,7 @@ import * as THREE_ from './three.module.js';
 const THREE: any = THREE_;
 import type {Trace} from '../../public/trace';
 import type {Tab} from '../../public/tab';
-import {NUM, STR, STR_NULL} from '../../trace_processor/query_result';
+import {NUM, NUM_NULL, STR, STR_NULL} from '../../trace_processor/query_result';
 
 interface Sample {
   ts: number;
@@ -57,30 +57,37 @@ function lastLE(samples: Sample[], ts: number): Sample | undefined {
 }
 
 async function loadStream(trace: Trace, name: string, sub: string,
-                          prefix: string): Promise<ByEntity> {
+                          posPfx: string, quatPfx: string): Promise<ByEntity> {
+  // SpaceManagerWrite args: posX/Y/Z + quatX/Y/Z/W. AperturePose: apPosX.. + apQuatX..
   const res = await trace.engine.query(`
     SELECT printf('0x%x', extract_arg(s.arg_set_id,'debug.apertureLow')) AS e,
       s.ts AS ts,
-      extract_arg(s.arg_set_id,'debug.${prefix}X') AS px,
-      extract_arg(s.arg_set_id,'debug.${prefix}Y') AS py,
-      extract_arg(s.arg_set_id,'debug.${prefix}Z') AS pz,
-      extract_arg(s.arg_set_id,'debug.${prefix}QuatX') AS qx,
-      extract_arg(s.arg_set_id,'debug.${prefix}QuatY') AS qy,
-      extract_arg(s.arg_set_id,'debug.${prefix}QuatZ') AS qz,
-      extract_arg(s.arg_set_id,'debug.${prefix}QuatW') AS qw,
+      extract_arg(s.arg_set_id,'debug.${posPfx}X') AS px,
+      extract_arg(s.arg_set_id,'debug.${posPfx}Y') AS py,
+      extract_arg(s.arg_set_id,'debug.${posPfx}Z') AS pz,
+      extract_arg(s.arg_set_id,'debug.${quatPfx}X') AS qx,
+      extract_arg(s.arg_set_id,'debug.${quatPfx}Y') AS qy,
+      extract_arg(s.arg_set_id,'debug.${quatPfx}Z') AS qz,
+      extract_arg(s.arg_set_id,'debug.${quatPfx}W') AS qw,
       extract_arg(s.arg_set_id,'debug.poseSource') AS src
     FROM slice s
     WHERE s.name='${name}' AND s.dur=0 AND ${sub}
     ORDER BY e, ts`);
   const it = res.iter({
-    e: STR, ts: NUM, px: NUM, py: NUM, pz: NUM,
-    qx: NUM, qy: NUM, qz: NUM, qw: NUM, src: STR_NULL,
+    e: STR, ts: NUM, px: NUM_NULL, py: NUM_NULL, pz: NUM_NULL,
+    qx: NUM_NULL, qy: NUM_NULL, qz: NUM_NULL, qw: NUM_NULL, src: STR_NULL,
   });
   const out: ByEntity = new Map();
   for (; it.valid(); it.next()) {
+    if (it.px === null || it.qx === null || it.qw === null) continue;  // skip partial rows
     let arr = out.get(it.e);
     if (!arr) out.set(it.e, arr = []);
-    arr.push({ts: it.ts, p: [it.px, it.py, it.pz], q: [it.qx, it.qy, it.qz, it.qw], src: it.src});
+    arr.push({
+      ts: it.ts,
+      p: [it.px, it.py!, it.pz!],
+      q: [it.qx, it.qy!, it.qz!, it.qw],
+      src: it.src,
+    });
   }
   return out;
 }
@@ -117,11 +124,11 @@ export class Pose3DTab implements Tab {
   private async load(): Promise<void> {
     const P = "extract_arg(s.arg_set_id,'debug.poseSource')";
     this.containers = await loadStream(this.trace, 'SpaceManagerWrite',
-      `${P}='shellContainerLocalToRaw'`, 'pos');
+      `${P}='shellContainerLocalToRaw'`, 'pos', 'quat');
     this.children = await loadStream(this.trace, 'SpaceManagerWrite',
-      `${P}='aetherChild'`, 'pos');
+      `${P}='aetherChild'`, 'pos', 'quat');
     this.latched = await loadStream(this.trace, 'AperturePose',
-      `extract_arg(s.arg_set_id,'debug.stage')='Latched'`, 'apPos');
+      `extract_arg(s.arg_set_id,'debug.stage')='Latched'`, 'apPos', 'apQuat');
     await this.loadMeta();
     this.ready = true;
     m.redraw();
