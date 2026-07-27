@@ -121,6 +121,9 @@ export class Pose3DTab implements Tab {
   private raf = 0;
   private lastMarker = NaN;
   private lastKey = '';
+  private hostEl?: HTMLElement;
+  private mountToken = 0;
+  private resizeObs?: ResizeObserver;
   // orbit
   private theta = 0.7;
   private phi = 1.2;
@@ -192,18 +195,24 @@ export class Pose3DTab implements Tab {
   }
 
   private mount(el: HTMLElement): void {
+    this.unmount();          // idempotent: tear down any prior renderer/loop/canvas
+    el.replaceChildren();    // drop any stale canvas/legend if oncreate re-fired
+    this.hostEl = el;
+    this.lastKey = '';       // force a rebuild for the current state on (re)mount
+    const myToken = ++this.mountToken;
     const w = Math.max(1, el.clientWidth), h = Math.max(1, el.clientHeight);
     const canvas = document.createElement('canvas');
     canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block';
     el.appendChild(canvas);
     // Panel resizes don't trigger Mithril redraws; observe the element directly.
-    new ResizeObserver(() => {
+    this.resizeObs = new ResizeObserver(() => {
       if (!this.renderer || !this.camera) return;
       const cw = Math.max(1, el.clientWidth), ch = Math.max(1, el.clientHeight);
       this.renderer.setSize(cw, ch, false);
       this.camera.aspect = cw / ch;
       this.camera.updateProjectionMatrix();
-    }).observe(el);
+    });
+    this.resizeObs.observe(el);
     this.legend = document.createElement('div');
     this.legend.style.cssText =
       'position:absolute;top:6px;left:8px;font:11px/1.4 monospace;color:#ddd;' +
@@ -236,6 +245,7 @@ export class Pose3DTab implements Tab {
     }, {passive: false});
 
     const loop = () => {
+      if (myToken !== this.mountToken) return;  // superseded by a newer mount → stop
       this.raf = requestAnimationFrame(loop);
       const cw = el.clientWidth, ch = el.clientHeight;
       if (cw && ch && (cw !== this.renderer!.domElement.width || ch !== this.renderer!.domElement.height)) {
@@ -267,9 +277,17 @@ export class Pose3DTab implements Tab {
   }
 
   private unmount(): void {
+    this.mountToken++;              // invalidate any running loop
     cancelAnimationFrame(this.raf);
+    this.resizeObs?.disconnect();
+    this.resizeObs = undefined;
     this.renderer?.dispose();
     this.renderer = undefined;
+    this.scene = undefined;
+    this.camera = undefined;
+    this.gizmos = undefined;
+    this.hostEl?.replaceChildren?.();
+    this.hostEl = undefined;
   }
 
   private matrix(s: Sample): any {
