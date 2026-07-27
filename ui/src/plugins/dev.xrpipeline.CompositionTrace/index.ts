@@ -88,14 +88,14 @@ export default class XrCompositionTracePlugin implements PerfettoPlugin {
     const tabUri = 'dev.xrpipeline.CompositionTrace#Pose';
     poseTab = new XrPoseTab(trace);
     trace.tabs.registerTab({uri: tabUri, content: poseTab});
-    trace.tabs.showTab(tabUri);
 
     // 3D pose viewer: hover the timeline; see the last container / aetherChild /
-    // latched pose per aperture in RAW space (open via the tab dropdown).
-    trace.tabs.registerTab({
-      uri: 'dev.xrpipeline.CompositionTrace#Pose3D',
-      content: new Pose3DTab(trace),
-    });
+    // latched pose per aperture in RAW space. Its WebGL/RAF loop only spins up when
+    // the tab is the active one, so showing it in the strip by default is cheap.
+    const pose3dUri = 'dev.xrpipeline.CompositionTrace#Pose3D';
+    trace.tabs.registerTab({uri: pose3dUri, content: new Pose3DTab(trace)});
+    trace.tabs.showTab(pose3dUri);  // add both to the strip...
+    trace.tabs.showTab(tabUri);     // ...with XR Pose active
 
     // Optional: load dump-derived entity metadata (package name + full UUID +
     // token->window) so the XR Pose tab resolves apertureLow beyond the low 64 bits.
