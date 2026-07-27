@@ -87,12 +87,12 @@ async function loadStream(trace: Trace, name: string, sub: string,
     WHERE s.name='${name}' AND s.dur=0 AND ${sub}
     ORDER BY e, ts`);
   const it = res.iter({
-    e: STR, ts: NUM, px: NUM_NULL, py: NUM_NULL, pz: NUM_NULL,
+    e: STR_NULL, ts: NUM, px: NUM_NULL, py: NUM_NULL, pz: NUM_NULL,
     qx: NUM_NULL, qy: NUM_NULL, qz: NUM_NULL, qw: NUM_NULL, src: STR_NULL,
   });
   const out: ByEntity = new Map();
   for (; it.valid(); it.next()) {
-    if (it.px === null || it.qx === null || it.qw === null) continue;  // skip partial rows
+    if (it.e === null || it.px === null || it.qx === null || it.qw === null) continue;  // skip partial rows
     let arr = out.get(it.e);
     if (!arr) out.set(it.e, arr = []);
     arr.push({
@@ -112,6 +112,7 @@ export class Pose3DTab implements Tab {
   private meta = new Map<string, Meta>();       // entity_hex -> {pkg, role}
   private tokenToWindow = new Map<string, string>(); // token hex -> window aperture hex
   private ready = false;
+  private errorMsg = '';
 
   private renderer?: any;
   private scene?: any;
@@ -119,7 +120,6 @@ export class Pose3DTab implements Tab {
   private gizmos?: any;
   private legend?: HTMLDivElement;
   private raf = 0;
-  private lastMarker = NaN;
   private lastKey = '';
   private hostEl?: HTMLElement;
   private mountToken = 0;
@@ -140,14 +140,19 @@ export class Pose3DTab implements Tab {
 
   private async load(): Promise<void> {
     const P = "extract_arg(s.arg_set_id,'debug.poseSource')";
-    this.containers = await loadStream(this.trace, 'SpaceManagerWrite',
-      `${P}='shellContainerLocalToRaw'`, 'pos', 'quat');
-    this.children = await loadStream(this.trace, 'SpaceManagerWrite',
-      `${P}='aetherChild'`, 'pos', 'quat');
-    this.latched = await loadStream(this.trace, 'AperturePose',
-      `extract_arg(s.arg_set_id,'debug.stage')='Latched'`, 'apPos', 'apQuat');
-    await this.loadMeta();
-    this.ready = true;
+    try {
+      this.containers = await loadStream(this.trace, 'SpaceManagerWrite',
+        `${P}='shellContainerLocalToRaw'`, 'pos', 'quat');
+      this.children = await loadStream(this.trace, 'SpaceManagerWrite',
+        `${P}='aetherChild'`, 'pos', 'quat');
+      this.latched = await loadStream(this.trace, 'AperturePose',
+        `extract_arg(s.arg_set_id,'debug.stage')='Latched'`, 'apPos', 'apQuat');
+      await this.loadMeta();
+      this.ready = true;
+    } catch (e) {
+      this.errorMsg = String(e);
+      console.error('XR Pose 3D: load failed', e);  // eslint-disable-line no-console
+    }
     m.redraw();
   }
 
@@ -172,13 +177,24 @@ export class Pose3DTab implements Tab {
     }
   }
 
-  private marker(): number | undefined {
-    const t = this.trace.timeline.hoverCursorTimestamp;
-    if (t !== undefined) return Number(t);
-    return Number.isNaN(this.lastMarker) ? undefined : this.lastMarker;
+  // Snapshot at a single selected event's timestamp (async ts lookup).
+  private async snapshotForEvent(eventId: number, key: string): Promise<void> {
+    try {
+      const res = await this.trace.engine.query(
+        `SELECT ts FROM slice WHERE id=${eventId} LIMIT 1`);
+      if (res.numRows() === 0) return;
+      const ts = res.firstRow({ts: NUM}).ts;
+      if (this.lastKey === key) this.rebuild([ts, ts], false);  // ignore if superseded
+    } catch {
+      // ignore
+    }
   }
 
   render(): m.Children {
+    if (this.errorMsg) {
+      return m('div', {style: 'padding:12px; color:#f88; font:12px/1.5 monospace'},
+        'XR Pose 3D load error:', m('br'), this.errorMsg);
+    }
     if (!this.ready) {
       return m('div', {style: 'padding:12px; color:#aaa'}, 'Loading pose data…');
     }
@@ -252,20 +268,17 @@ export class Pose3DTab implements Tab {
         this.renderer!.setSize(cw, ch, false);
         this.camera!.aspect = cw / ch; this.camera!.updateProjectionMatrix();
       }
-      // Drive from an area selection (trail over the range) if present, else the
-      // hover marker (snapshot).
+      // Driven by SELECTION only (no hover): area selection -> trail over the range;
+      // a single track_event -> snapshot at that event's timestamp.
       const sel = this.trace.selection.selection;
-      let range: [number, number] | undefined;
-      let trail = false;
-      if (sel && sel.kind === 'area') {
-        range = [Number(sel.start), Number(sel.end)];
-        trail = true;
-      } else {
-        const mk = this.marker();
-        if (mk !== undefined) { this.lastMarker = mk; range = [mk, mk]; }
+      let selKey = '';
+      if (sel && sel.kind === 'area') selKey = `a:${Number(sel.start)}-${Number(sel.end)}`;
+      else if (sel && sel.kind === 'track_event') selKey = `e:${sel.eventId}`;
+      if (selKey && selKey !== this.lastKey) {
+        this.lastKey = selKey;
+        if (sel.kind === 'area') this.rebuild([Number(sel.start), Number(sel.end)], true);
+        else if (sel.kind === 'track_event') this.snapshotForEvent(sel.eventId, selKey);
       }
-      const key = range ? `${trail ? 'a' : 'p'}:${range[0]}-${range[1]}` : '';
-      if (range && key !== this.lastKey) { this.lastKey = key; this.rebuild(range, trail); }
       this.camera!.position.set(
         this.target.x + this.radius * Math.sin(this.phi) * Math.sin(this.theta),
         this.target.y + this.radius * Math.cos(this.phi),
@@ -404,8 +417,8 @@ export class Pose3DTab implements Tab {
 
     if (this.legend) {
       const hdr = trail
-        ? `<b>trail ${(s / 1e9).toFixed(3)}–${(e / 1e9).toFixed(3)} s</b> (area-select a range; hover for a snapshot)`
-        : `<b>marker t=${(e / 1e9).toFixed(3)} s</b> (hover the timeline; area-select for a trail)`;
+        ? `<b>trail ${(s / 1e9).toFixed(3)}–${(e / 1e9).toFixed(3)} s</b> (area selection)`
+        : `<b>event t=${(e / 1e9).toFixed(3)} s</b> (single selection; area-select a range for a trail)`;
       this.legend.innerHTML = hdr + '<br>' + (rows.length ? rows.join('<br>') : '(no poses in range)');
     }
   }
