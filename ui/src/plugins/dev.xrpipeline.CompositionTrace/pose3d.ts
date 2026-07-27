@@ -179,18 +179,28 @@ export class Pose3DTab implements Tab {
     if (!this.ready) {
       return m('div', {style: 'padding:12px; color:#aaa'}, 'Loading pose data…');
     }
+    // min-height + height:100% so the wrapper has real height in the side panel
+    // (its content area doesn't impose one); the canvas fills it absolutely.
     return m('div', {
-      style: 'position:relative; width:100%; height:520px; background:#0b0b0f',
+      style: 'position:relative; width:100%; height:100%; min-height:70vh; background:#0b0b0f',
       oncreate: (v) => this.mount(v.dom as HTMLElement),
       onremove: () => this.unmount(),
     });
   }
 
   private mount(el: HTMLElement): void {
-    const w = el.clientWidth || 800, h = el.clientHeight || 520;
+    const w = Math.max(1, el.clientWidth), h = Math.max(1, el.clientHeight);
     const canvas = document.createElement('canvas');
-    canvas.style.cssText = 'width:100%;height:100%;display:block';
+    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block';
     el.appendChild(canvas);
+    // Panel resizes don't trigger Mithril redraws; observe the element directly.
+    new ResizeObserver(() => {
+      if (!this.renderer || !this.camera) return;
+      const cw = Math.max(1, el.clientWidth), ch = Math.max(1, el.clientHeight);
+      this.renderer.setSize(cw, ch, false);
+      this.camera.aspect = cw / ch;
+      this.camera.updateProjectionMatrix();
+    }).observe(el);
     this.legend = document.createElement('div');
     this.legend.style.cssText =
       'position:absolute;top:6px;left:8px;font:11px/1.4 monospace;color:#ddd;' +
