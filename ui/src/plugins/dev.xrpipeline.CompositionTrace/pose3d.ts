@@ -112,6 +112,7 @@ export class Pose3DTab implements Tab {
   private meta = new Map<string, Meta>();       // entity_hex -> {pkg, role}
   private tokenToWindow = new Map<string, string>(); // token hex -> window aperture hex
   private ready = false;
+  private shownReady = false;
   private errorMsg = '';
 
   private renderer?: any;
@@ -140,15 +141,22 @@ export class Pose3DTab implements Tab {
 
   private async load(): Promise<void> {
     const P = "extract_arg(s.arg_set_id,'debug.poseSource')";
+    const log = (s: string) => console.info('XR Pose 3D:', s);  // eslint-disable-line no-console
     try {
+      log('loading containers…');
       this.containers = await loadStream(this.trace, 'SpaceManagerWrite',
         `${P}='shellContainerLocalToRaw'`, 'pos', 'quat');
+      log(`containers=${this.containers.size}; loading children…`);
       this.children = await loadStream(this.trace, 'SpaceManagerWrite',
         `${P}='aetherChild'`, 'pos', 'quat');
+      log(`children=${this.children.size}; loading latched…`);
       this.latched = await loadStream(this.trace, 'AperturePose',
         `extract_arg(s.arg_set_id,'debug.stage')='Latched'`, 'apPos', 'apQuat');
+      log(`latched=${this.latched.size}; loading meta…`);
       await this.loadMeta();
       this.ready = true;
+      this.lastKey = '';  // re-render whatever is currently selected now that data exists
+      log(`ready (meta=${this.meta.size})`);
     } catch (e) {
       this.errorMsg = String(e);
       console.error('XR Pose 3D: load failed', e);  // eslint-disable-line no-console
@@ -195,9 +203,9 @@ export class Pose3DTab implements Tab {
       return m('div', {style: 'padding:12px; color:#f88; font:12px/1.5 monospace'},
         'XR Pose 3D load error:', m('br'), this.errorMsg);
     }
-    if (!this.ready) {
-      return m('div', {style: 'padding:12px; color:#aaa'}, 'Loading pose data…');
-    }
+    // Always mount the canvas (don't gate on `ready`): the grid/axes show
+    // immediately and pose data streams in via the render loop, so this never hangs
+    // on a "Loading" screen even if a query is slow or the panel doesn't redraw.
     // min-height + height:100% so the wrapper has real height in the side panel
     // (its content area doesn't impose one); the canvas fills it absolutely.
     return m('div', {
@@ -263,6 +271,14 @@ export class Pose3DTab implements Tab {
     const loop = () => {
       if (myToken !== this.mountToken) return;  // superseded by a newer mount → stop
       this.raf = requestAnimationFrame(loop);
+      // Legend status until data is ready (no full-screen gate).
+      if (this.legend) {
+        if (!this.ready) this.legend.innerHTML = 'Loading pose data…';
+        else if (!this.shownReady) {
+          this.shownReady = true;
+          this.legend.innerHTML = 'Select an event (snapshot) or drag a time range (trail).';
+        }
+      }
       const cw = el.clientWidth, ch = el.clientHeight;
       if (cw && ch && (cw !== this.renderer!.domElement.width || ch !== this.renderer!.domElement.height)) {
         this.renderer!.setSize(cw, ch, false);
