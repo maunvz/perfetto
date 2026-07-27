@@ -184,6 +184,9 @@ export class Pose3DTab implements Tab {
     return m('div', {
       style: 'position:relative; width:100%; height:100%; min-height:70vh; background:#0b0b0f',
       oncreate: (v) => this.mount(v.dom as HTMLElement),
+      // We append the canvas/legend imperatively; without this Mithril diffs this
+      // node on every redraw and strips those children (leaving a blank div).
+      onbeforeupdate: () => false,
       onremove: () => this.unmount(),
     });
   }
